@@ -1,21 +1,27 @@
 import { Router } from "express";
-import supabase from "../config/dbConfig.js";
+import supabase, { pool } from "../config/dbConfig.js";
 
 let router = Router();
 
 router.post("/create", async (req, res) => {
   try {
     const user_id = req.headers["user_id"];
-
+    
+  
+    
+  
     const { data, error } = await supabase
       .from("game")
       .insert({
         status: "waiting",
         created_by: user_id,
-        created_at: Date.now(),
+        created_at:null ,
       })
       .select("id")
       .single();
+
+      console.log(error);
+      
 
     // check if currently in another game bad request 400 response code.
 
@@ -28,9 +34,9 @@ router.post("/create", async (req, res) => {
     });
 
     console.log("game created");
-    res.status(200).json({ game_id: data.id, user_id: user_id });
+    return res.status(200).json({ game_id: data.id, user_id: user_id });
   } catch (error) {
-    res
+    return res
       .status(500)
       .json({ message: ` something went wrong :- ${error.message}` });
   }
@@ -83,62 +89,62 @@ router.post("/join", async (req, res) => {
       return res.json({ game_id: data[0].id });
     }
 
-   return res.status(200).json({ message: "player joined" }); // response player_id and color
+    return res.status(200).json({ message: "player joined" }); // response player_id and color
   } catch (error) {
-   return res
+    return res
       .status(500)
       .json({ message: ` something went wrong :- ${error.message}` });
   }
 });
 
-router.post("/start", async (req, res) => {
- try {
-  const game_id = req.headers["game_id"];
+router.post("/start/:game_id", async (req, res) => {
+  try {
+    const { game_id } = req.params;
 
-  //if not 4 players bad request.
+    //if not 4 players bad request.
 
-  const { data } = await supabase
-    .from("player")
-    .select("*")
-    .eq("game_id", game_id);
+    const { data } = await supabase
+      .from("player")
+      .select("*")
+      .eq("game_id", game_id);
 
-
-
-  // defensive programming
-  const coinData = await supabase.from("coin_position").select("*");
-  if (!coinData.data.length) {
-    for (const playerData of data) {
-      for (let i = 0; i < 4; i++) {
-        await supabase.from("coin_position").insert({
-          player_id: playerData.id,
-          in_home: false,
-          position: 0,
-        });
-      }
+    if (data.length < 4) {
+      return res.status(400).json({ message: "Not enough players" });
     }
-  } else {
-    console.log("already some data");
-  }
+    // defensive programming
+    const coinData = await supabase.from("coin_position").select("*");
+    if (!coinData.data.length) {
+      for (const playerData of data) {
+        for (let i = 0; i < 4; i++) {
+          await supabase.from("coin_position").insert({
+            player_id: playerData.id,
+            in_home: false,
+            position: 0,
+          });
+        }
+      }
+    } else {
+      console.log("already some data");
+    }
 
-  const firstPlayer = await supabase
-    .from("player")
-    .select("id")
-    .eq("game_id", game_id)
-    .eq("color", "red");
+    const firstPlayer = await supabase
+      .from("player")
+      .select("id")
+      .eq("game_id", game_id)
+      .eq("color", "red");
 
-  const player_id = firstPlayer.data[0].id;
+    const player_id = firstPlayer.data[0].id;
 
-  await supabase.from("player_turn").insert({
-    game_id: game_id,
-    player_id: player_id,
-  });
-  res.status(200).json({ message: "game started" });
- } catch (error) {
-  res
+    await supabase.from("player_turn").insert({
+      game_id: game_id,
+      player_id: player_id,
+    });
+    res.status(200).json({ message: "game started" });
+  } catch (error) {
+    res
       .status(500)
       .json({ message: ` something went wrong :- ${error.message}` });
-  
- }
+  }
 });
 
 export default router;
