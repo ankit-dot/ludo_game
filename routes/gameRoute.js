@@ -6,35 +6,21 @@ let router = Router();
 router.post("/create", async (req, res) => {
   try {
     const user_id = req.headers["user_id"];
-    
-  
-    
-  
-    const { data, error } = await supabase
-      .from("game")
-      .insert({
-        status: "waiting",
-        created_by: user_id,
-        created_at:null ,
-      })
-      .select("id")
-      .single();
 
-      console.log(error);
-      
+    const gameCreate = await pool.query(
+      "INSERT INTO game (status, created_by, created_at) VALUES ('waiting', $1, EXTRACT(EPOCH FROM NOW())) RETURNING id;",
+      [user_id]
+    );
 
-    // check if currently in another game bad request 400 response code.
-
-    await supabase.from("player").insert({
-      game_id: data.id,
-      user_id: user_id,
-      color: "red",
-      status: "in_progress",
-      finished_ts: null,
-    });
+    const playerInsert = await pool.query(
+      "INSERT INTO player (game_id, user_id, color, status, finished_ts) VALUES ($1, $2, 'red', 'in_progress', NULL);",
+      [gameCreate.rows[0].id, user_id]
+    );
 
     console.log("game created");
-    return res.status(200).json({ game_id: data.id, user_id: user_id });
+    return res
+      .status(200)
+      .json({ game_id: gameCreate.rows[0].id, user_id: user_id });
   } catch (error) {
     return res
       .status(500)
@@ -45,48 +31,43 @@ router.post("/create", async (req, res) => {
 router.post("/join", async (req, res) => {
   try {
     const user_id = req.headers["user_id"];
-    const { data } = await supabase
-      .from("game")
-      .select("*")
-      .eq("status", "waiting")
-      .order("created_at", { ascending: false })
-      .limit(1);
+    const gameData = await pool.query(
+      "SELECT * FROM game WHERE status = $1 ORDER BY created_at DESC LIMIT 1;",
+      ["waiting"]
+    );
 
-    if (data.length === 0) {
+    if (gameData.rows.length === 0) {
       return res.status(404).json({ message: "No available games right now" });
     }
 
-    const { count } = await supabase
-      .from("player")
-      .select("*", { count: "exact", head: true })
-      .eq("game_id", data[0].id);
+    const playerCount = await pool.query(
+      "SELECT COUNT(*) FROM player WHERE game_id = $1;",
+      [gameData.rows[0].id]
+    );
 
     let color;
-
-    if (count === 1) {
+   console.log(playerCount.rows[0].count);
+    if (playerCount.rows[0].count === '1') {
       color = "green";
-    } else if (count === 2) {
+    } else if (playerCount.rows[0].count === '2') {
       color = "yellow";
     } else {
       color = "blue";
     }
 
-    // if count is more then three bad request.
-    await supabase.from("player").insert({
-      game_id: data[0].id,
-      user_id: user_id,
-      color: color,
-      status: "progressed",
-      finished_ts: null,
-    });
+    // if playerCount is more then three bad request.
+    const playerInsert = await pool.query(
+      "INSERT INTO player (game_id, user_id, color, status, finished_ts) VALUES ($1, $2, $3, 'in_progress', NULL);",
+      [gameData.rows[0].id, user_id, color]
+    );
 
-    if (count >= 3) {
-      await supabase
-        .from("game")
-        .update({ status: "playing" })
-        .eq("id", data[0].id);
+    if (playerCount >= 3) {
+      const gameUpdate = await pool.query(
+        "UPDATE game SET status = $1 WHERE id = $2;",
+        ["playing", gameData.rows[0].id]
+      );
 
-      return res.json({ game_id: data[0].id });
+      return res.json({ game_id: gameData.rows[0].id });
     }
 
     return res.status(200).json({ message: "player joined" }); // response player_id and color
@@ -101,50 +82,61 @@ router.post("/start/:game_id", async (req, res) => {
   try {
     const { game_id } = req.params;
 
-    //if not 4 players bad request.
+    // Check if there are 4 players for the game
+    const playerData = await pool.query(
+      "SELECT * FROM player WHERE game_id = $1;",
+      [game_id]
+    );
 
-    const { data } = await supabase
-      .from("player")
-      .select("*")
-      .eq("game_id", game_id);
-
-    if (data.length < 4) {
+    if (playerData.rows.length < 4) {
       return res.status(400).json({ message: "Not enough players" });
     }
-    // defensive programming
-    const coinData = await supabase.from("coin_position").select("*");
-    if (!coinData.data.length) {
-      for (const playerData of data) {
-        for (let i = 0; i < 4; i++) {
-          await supabase.from("coin_position").insert({
-            player_id: playerData.id,
-            in_home: false,
-            position: 0,
-          });
-        }
-      }
-    } else {
-      console.log("already some data");
+
+    // Defensive programming: Check if coin positions are already initialized
+    const coinData = await pool.query(
+      "SELECT * FROM coin_position WHERE game_id = $1;",
+      [game_id]
+    );
+
+     await pool.query(
+      "UPDATE game SET status = $1 WHERE id = $2;",
+      ["playing", game_id]
+    );
+   
+    if (coinData.rows.length) {
+      return res.status(400).json({ message: "game is already started" });
     }
+    
+      for (const player of playerData.rows) {
+        for (let i = 0; i < 4; i++) {
+          await pool.query(
+            "INSERT INTO coin_position (player_id, in_home, position , game_id) VALUES ($1, $2, $3,$4);",
+            [player.id, false, 0, game_id]
+          );
+        }
+      
+    }
+    
+    const dice_value = Math.ceil(Math.random() * 6);
+    // Select the first player with the red color
+    const firstPlayer = await pool.query(
+      "SELECT id FROM player WHERE game_id = $1 AND color = 'red';",
+      [game_id]
+    );
 
-    const firstPlayer = await supabase
-      .from("player")
-      .select("id")
-      .eq("game_id", game_id)
-      .eq("color", "red");
+    const player_id = firstPlayer.rows[0].id;
 
-    const player_id = firstPlayer.data[0].id;
+    // Insert the first turn for the player with the red color
+    await pool.query(
+      "INSERT INTO player_turn (game_id, player_id , dice_value) VALUES ($1, $2 ,$3);",
+      [game_id, player_id , dice_value]
+    );
 
-    await supabase.from("player_turn").insert({
-      game_id: game_id,
-      player_id: player_id,
-    });
     res.status(200).json({ message: "game started" });
   } catch (error) {
-    res
-      .status(500)
-      .json({ message: ` something went wrong :- ${error.message}` });
+    res.status(500).json({ message: `Something went wrong: ${error.message}` });
   }
 });
+
 
 export default router;
